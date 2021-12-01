@@ -1,4 +1,16 @@
-<launch> 
+import tensorflow as tf2
+import tf2.compat.v1 as tf
+tf.disable_v2_behavior()
+conf = tf.ConfigProto()
+conf.gpu.options.allow_growth = True
+detection_graph = tf.Graph()
+with detection_graph.as_default():
+    with tf.io.gfile.GFile('../../tfmodels/stop_signs_gazebo.pb', 'rb') as f:
+        od_graph_def = tf.GraphDef()
+        od_graph_def.ParseFromString(f.read())
+        tf2.utils.import_graph_def(od_graph_def, name='')
+        """
+        <launch> 
   <arg name="sim" default="true" /> 
   <arg name="gui" default="true" /> 
   <arg name="gmapping" default="true" /> 
@@ -65,3 +77,5 @@
   </group>
 
 </launch>
+
+        """
