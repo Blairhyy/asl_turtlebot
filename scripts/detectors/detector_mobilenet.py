@@ -5,13 +5,19 @@ import os
 
 # watch out on the order for the next two imports lol
 from tf import TransformListener
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 import numpy as np
 from sensor_msgs.msg import CompressedImage, Image, CameraInfo, LaserScan
 from asl_turtlebot.msg import DetectedObject, DetectedObjectList
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import math
+# export CUDA_VISIBLE_DEVICES=2
+
+conf = tf.ConfigProto()
+conf.gpu_options.allow_growth = True
+session = tf.Session(config=conf)
 
 # path to the trained conv net
 PATH_TO_MODEL = os.path.join(
@@ -66,7 +72,7 @@ class Detector:
                 with tf.gfile.GFile(PATH_TO_MODEL, "rb") as fid:
                     serialized_graph = fid.read()
                     od_graph_def.ParseFromString(serialized_graph)
-                    tf.import_graph_def(od_graph_def, name="")
+                    tf.graph_util.import_graph_def(od_graph_def, name="")
                 self.image_tensor = self.detection_graph.get_tensor_by_name(
                     "image_tensor:0"
                 )
@@ -100,21 +106,21 @@ class Detector:
 
         self.tf_listener = TransformListener()
         rospy.Subscriber(
-            "/raspicam_node/image_raw",
+            "/camera/image_raw",
             Image,
             self.camera_callback,
             queue_size=1,
             buff_size=2 ** 24,
         )
         rospy.Subscriber(
-            "/raspicam_node/image/compressed",
+            "/camera/image_raw/compressed",
             CompressedImage,
             self.compressed_camera_callback,
             queue_size=1,
             buff_size=2 ** 24,
         )
         rospy.Subscriber(
-            "/raspicam_node/camera_info", CameraInfo, self.camera_info_callback
+            "/camera/camera_info", CameraInfo, self.camera_info_callback
         )
         rospy.Subscriber("/scan", LaserScan, self.laser_callback)
 
@@ -175,7 +181,7 @@ class Detector:
         f_scores, f_boxes, f_classes = [], [], []
         f_num = 0
 
-        for i in range(num):
+        for i in range(int(num)):
             if scores[i] >= MIN_SCORE:
                 f_scores.append(scores[i])
                 f_boxes.append(boxes[i])
@@ -288,6 +294,11 @@ class Detector:
                     img_bgr8, (xmin, ymin), (xmax, ymax), (255, 0, 0), 2
                 )
 
+                cv2.putText(
+                    img_bgr8, "{0}, {1}%".format(self.object_labels[cl], round(sc*100, 2)),
+                    (xmin, ymax), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA
+                )
+
                 # computes the vectors in camera frame corresponding to each sides of the box
                 rayleft = self.project_pixel_to_ray(xmin, ycen)
                 rayright = self.project_pixel_to_ray(xmax, ycen)
@@ -305,7 +316,7 @@ class Detector:
                     thetaleft, thetaright, img_laser_ranges
                 )
 
-                if not self.object_publishers.has_key(cl):
+                if not cl in self.object_publishers:
                     self.object_publishers[cl] = rospy.Publisher(
                         "/detector/" + self.object_labels[cl],
                         DetectedObject,
@@ -330,8 +341,8 @@ class Detector:
             self.detected_objects_pub.publish(detected_objects)
 
         # displays the camera image
-        # cv2.imshow("Camera", img_bgr8)
-        # cv2.waitKey(1)
+        cv2.imshow("Camera", img_bgr8)
+        cv2.waitKey(1)
 
     def camera_info_callback(self, msg):
         """extracts relevant camera intrinsic parameters from the camera_info message.

@@ -1,15 +1,25 @@
-import tensorflow as tf2
-import tf2.compat.v1 as tf
+from numpy.linalg.linalg import det
+import tensorflow.compat.v1 as tf
+
+"""
+
+    <arg name="detector" default="detector_mobilenet.py"/>
+
+<node pkg="asl_turtlebot" type="supervisor.py" name="turtlebot_supervisor" output="screen" />
+"""
 tf.disable_v2_behavior()
+
 conf = tf.ConfigProto()
-conf.gpu.options.allow_growth = True
+conf.gpu_options.allow_growth = True
 detection_graph = tf.Graph()
 with detection_graph.as_default():
     with tf.io.gfile.GFile('../../tfmodels/stop_signs_gazebo.pb', 'rb') as f:
         od_graph_def = tf.GraphDef()
         od_graph_def.ParseFromString(f.read())
-        tf2.utils.import_graph_def(od_graph_def, name='')
-        """
+        tf.import_graph_def(od_graph_def,name='')
+        print("loaded")
+tf.print(tf.get_default_graph())
+"""
         <launch> 
   <arg name="sim" default="true" /> 
   <arg name="gui" default="true" /> 

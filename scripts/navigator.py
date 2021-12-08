@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 
+from time import time, sleep
+from collections import deque
 import rospy
 from nav_msgs.msg import OccupancyGrid, MapMetaData, Path
 from geometry_msgs.msg import Twist, Pose2D, PoseStamped
+from utils.grids import FilterDilation
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 import tf
 import numpy as np
 from numpy import linalg
 from utils.utils import wrapToPi
-from utils.grids import StochOccupancyGrid2D
+from utils.grids import DilatedDetOccupancyGrid2D, StochOccupancyGrid2D
 from planners import AStar, compute_smoothed_traj
 import scipy.interpolate
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from controllers import PoseController, TrajectoryTracker, HeadingController
 from enum import Enum
@@ -25,6 +31,7 @@ class Mode(Enum):
     TRACK = 2
     PARK = 3
 
+WINDOW_SIZE = 5
 
 class Navigator:
     """
@@ -53,13 +60,13 @@ class Navigator:
         self.map_height = 0
         self.map_resolution = 0
         self.map_origin = [0, 0]
-        self.map_probs = []
+        self.map_probs = [] 
         self.occupancy = None
         self.occupancy_updated = False
 
         # plan parameters
         self.plan_resolution = 0.1
-        self.plan_horizon = 15
+        self.plan_horizon = 10
 
         # time when we started following the plan
         self.current_plan_start_time = rospy.get_rostime()
@@ -68,7 +75,7 @@ class Navigator:
 
         # Robot limits
         self.v_max = 0.2  # maximum velocity
-        self.om_max = 0.4  # maximum angular velocity
+        self.om_max =0.4  # maximum angular velocity
 
         self.v_des = 0.12  # desired cruising velocity
         self.theta_start_thresh = 0.05  # threshold in theta to start moving forward when path-following
@@ -77,22 +84,26 @@ class Navigator:
         )
 
         # threshold at which navigator switches from trajectory to pose control
-        self.near_thresh = 0.2
-        self.at_thresh = 0.02
+        self.near_thresh = 0.3
+        self.at_thresh = 0.05
         self.at_thresh_theta = 0.05
 
         # trajectory smoothing
-        self.spline_alpha = 0.15
-        self.traj_dt = 0.1
+        self.spline_alpha = 0.01
+        self.traj_dt = 0.15
 
         # trajectory tracking controller parameters
-        self.kpx = 0.5
-        self.kpy = 0.5
-        self.kdx = 1.5
-        self.kdy = 1.5
+        self.kpx = 2.5
+        self.kpy = 2.5
+        self.kdx = 2
+        self.kdy = 2
+        # self.kpx = 0.3
+        # self.kpy = 0.3
+        # self.kdx = 0.3
+        # self.kdy = 0.3
 
         # heading controller parameters
-        self.kp_th = 2.0
+        self.kp_th = 1
 
         self.traj_controller = TrajectoryTracker(
             self.kpx, self.kpy, self.kdx, self.kdy, self.v_max, self.om_max
@@ -120,9 +131,41 @@ class Navigator:
         rospy.Subscriber("/map", OccupancyGrid, self.map_callback)
         rospy.Subscriber("/map_metadata", MapMetaData, self.map_md_callback)
         rospy.Subscriber("/cmd_nav", Pose2D, self.cmd_nav_callback)
-
+        # rospy.Subscriber("/cmd_pose", Pose2D, self.cmd_nav_callback)
         print("finished init")
 
+    #     rospy.Subscriber("/scan", LaserScan, self.scan_callback)
+    # def scan_callback(self, msg):
+    #     minIdx = np.argmin(msg.ranges)
+    #     print(msg.ranges[minIdx])
+    #     if msg.ranges[minIdx] < 0.3:
+    #         cmd_vel = Twist()
+    #         self.nav_vel_pub.publish(cmd_vel)
+    #         self.th_init = wrapToPi( msg.angle_min + msg.angle_increment * minIdx - np.pi)
+    #         print("Attempt to align with ",self.th_init, self.theta, msg.angle_min + msg.angle_increment * minIdx)
+    #         self.current_plan_start_time = rospy.get_rostime()
+    #         while not self.aligned():
+    #             # print("aligned?", self.aligned())
+    #             self.heading_controller.load_goal(self.th_init)
+    #             V, om = self.heading_controller.compute_control(self.x, self.y, self.theta, self.get_current_plan_time())
+    #             cmd_vel = Twist()
+    #             cmd_vel.linear.x = V
+    #             cmd_vel.angular.z = om
+    #             self.nav_vel_pub.publish(cmd_vel)
+    #         print(self.theta, "Move for 1 second")
+    #         cmd_vel = Twist()
+    #         cmd_vel.linear.x = 0.04
+    #         cmd_vel.angular.z = 0
+    #         start = rospy.get_rostime()
+    #         while (rospy.get_rostime() - start).to_sec() < 1:
+    #             self.nav_vel_pub.publish(cmd_vel)
+    #         cmd_vel = Twist()
+    #         self.nav_vel_pub.publish(cmd_vel)
+    #         if self.x_g and self.y_g and self.theta_g:
+    #             self.replan()
+
+
+            
     def dyn_cfg_callback(self, config, level):
         rospy.loginfo(
             "Reconfigure Request: k1:{k1}, k2:{k2}, k3:{k3}".format(**config)
@@ -172,14 +215,43 @@ class Navigator:
                 self.map_height,
                 self.map_origin[0],
                 self.map_origin[1],
-                8,
+                WINDOW_SIZE,
                 self.map_probs,
             )
+
+            # self.occupancy = FilterDilation(
+            #     self.map_resolution,
+            #     self.map_width,
+            #     self.map_height,
+            #     self.map_origin[0],
+            #     self.map_origin[1],
+            #     WINDOW_SIZE,
+            #     self.map_probs,
+            # )
+
+
+            # # # # print(self.occupancy.dilated_prob_2d)
+            # plt.imshow(self.occupancy.dilated_prob_2d)
+            # plt.savefig("dilated.png")
+            # plt.imshow(self.occupancy.probs_2d)
+            # plt.savefig("undilated.png")
+
+            # self.occupancy = DilatedDetOccupancyGrid2D(
+            #     self.map_resolution,
+            #     self.map_width,
+            #     self.map_height,
+            #     self.map_origin[0],
+            #     self.map_origin[1],
+            #     4,
+            #     self.map_probs,
+            #     )
+
             if self.x_g is not None:
                 # if we have a goal to plan to, replan
+                
                 rospy.loginfo("replanning because of new map")
                 self.replan()  # new map, need to replan
-
+                
     def shutdown_callback(self):
         """
         publishes zero velocities upon rospy shutdown
@@ -234,7 +306,7 @@ class Navigator:
     def switch_mode(self, new_mode):
         rospy.loginfo("Switching from %s -> %s", self.mode, new_mode)
         self.mode = new_mode
-
+# <node pkg="asl_turtlebot" type="supervisor.py" name="turtlebot_supervisor" output="screen" />
     def publish_planned_path(self, path, publisher):
         # publish planned plan for visualization
         path_msg = Path()
@@ -267,7 +339,7 @@ class Navigator:
         are all properly set up / with the correct goals loaded
         """
         t = self.get_current_plan_time()
-
+        # print(self.x, self.y, self.theta, self.mode)
         if self.mode == Mode.PARK:
             V, om = self.pose_controller.compute_control(
                 self.x, self.y, self.theta, t
@@ -312,6 +384,8 @@ class Navigator:
             self.switch_mode(Mode.IDLE)
             return
 
+        # cmd_vel = Twist()
+        # self.nav_vel_pub.publish(cmd_vel)
         # Attempt to plan a path
         state_min = self.snap_to_grid((-self.plan_horizon, -self.plan_horizon))
         state_max = self.snap_to_grid((self.plan_horizon, self.plan_horizon))
@@ -327,8 +401,15 @@ class Navigator:
             self.plan_resolution,
         )
 
+        # self.occupancy.plot()
+        # plt.savefig('Occupan.png')
+
         rospy.loginfo("Navigator: computing navigation plan")
         success = problem.solve()
+        
+        
+        
+
         if not success:
             rospy.loginfo("Planning failed")
             return
@@ -339,7 +420,10 @@ class Navigator:
         # Check whether path is too short
         if len(planned_path) < 4:
             rospy.loginfo("Path too short to track")
-            self.switch_mode(Mode.PARK)
+            if self.x_g is None:
+                self.switch_mode(Mode.IDLE)
+            else:
+                self.switch_mode(Mode.PARK)
             return
 
         # Smooth and generate a trajectory
@@ -358,8 +442,9 @@ class Navigator:
             th_err = wrapToPi(th_init_new - self.theta)
             t_init_align = abs(th_err / self.om_max)
             t_remaining_new = t_init_align + t_new[-1]
-
-            if t_remaining_new > t_remaining_curr:
+            print(abs(t_remaining_new - t_remaining_curr))
+            if abs(t_new[-1] - t_remaining_new) < 2 or t_init_align < 1:
+            # if not (t_new[-1] > t_remaining_curr + 2) or (t_remaining_new > t_remaining_curr):
                 rospy.loginfo(
                     "New plan rejected (longer duration than current plan)"
                 )
@@ -414,6 +499,7 @@ class Navigator:
 
             # STATE MACHINE LOGIC
             # some transitions handled by callbacks
+            # time_beg = time()
             if self.mode == Mode.IDLE:
                 pass
             elif self.mode == Mode.ALIGN:
@@ -421,16 +507,17 @@ class Navigator:
                     self.current_plan_start_time = rospy.get_rostime()
                     self.switch_mode(Mode.TRACK)
             elif self.mode == Mode.TRACK:
+                print(self.x, self.y, self.x_g, self.y_g, self.near_goal(), linalg.norm(np.array([self.x - self.x_g, self.y - self.y_g])))
                 if self.near_goal():
                     self.switch_mode(Mode.PARK)
                 elif not self.close_to_plan_start():
                     rospy.loginfo("replanning because far from start")
                     self.replan()
-                elif (
-                    rospy.get_rostime() - self.current_plan_start_time
-                ).to_sec() > self.current_plan_duration:
-                    rospy.loginfo("replanning because out of time")
-                    self.replan()  # we aren't near the goal but we thought we should have been, so replan
+                # elif (
+                #     rospy.get_rostime() - self.current_plan_start_time
+                # ).to_sec() > self.current_plan_duration:
+                #     rospy.loginfo("replanning because out of time")
+                #     self.replan()  # we aren't near the goal but we thought we should have been, so replan
             elif self.mode == Mode.PARK:
                 if self.at_goal():
                     # forget about goal:
@@ -440,10 +527,12 @@ class Navigator:
                     self.switch_mode(Mode.IDLE)
 
             self.publish_control()
+            # rospy.loginfo("Using time: {0}".format(time()-time_beg))
             rate.sleep()
 
 
 if __name__ == "__main__":
     nav = Navigator()
     rospy.on_shutdown(nav.shutdown_callback)
+    
     nav.run()
